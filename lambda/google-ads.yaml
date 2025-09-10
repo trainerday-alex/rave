@@ -1,0 +1,3 @@
+developer_token: YOUR_DEVELOPER_TOKEN
+client_customer_id: YOUR_CLIENT_CUSTOMER_ID  
+use_proto_plus: True

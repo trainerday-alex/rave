@@ -1,0 +1,257 @@
+#!/usr/bin/env python3
+import json
+import sys
+
+def handle_list_tools():
+    return {
+        "tools": [
+            {
+                "name": "rave",
+                "description": "Says hello from Rave MCP server",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Name to greet (optional, defaults to 'World')"
+                        }
+                    }
+                }
+            },
+            {
+                "name": "start_campaign_creation",
+                "description": "Start the interactive campaign creation process - will ask user for required information step by step",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False
+                }
+            },
+            {
+                "name": "create_campaign",
+                "description": "Create a new marketing campaign with all required information provided",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "campaign_name": {
+                            "type": "string",
+                            "description": "Name of the campaign (required)"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Campaign description (required)"
+                        },
+                        "client_name": {
+                            "type": "string",
+                            "description": "Client name (required)"
+                        },
+                        "budget": {
+                            "type": "number",
+                            "description": "Campaign budget (optional)"
+                        },
+                        "channels": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Marketing channels (e.g., email, social, ads)"
+                        }
+                    },
+                    "required": ["campaign_name", "description", "client_name"]
+                }
+            }
+        ]
+    }
+
+def handle_call_tool(name, arguments):
+    if name == "rave":
+        greeting_name = arguments.get("name", "World")
+        message = f"Hello {greeting_name}! This is Rave MCP Server 🎉"
+        
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": message
+                }
+            ]
+        }
+    
+    elif name == "start_campaign_creation":
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": "🚀 Let's create a new campaign! I need some information from you:\n\n1. **Campaign Name**: What would you like to call this campaign?\n2. **Client Name**: Which client is this campaign for?\n3. **Description**: Can you describe what this campaign is about?\n\nOptionally, you can also provide:\n- **Budget**: What's the budget for this campaign?\n- **Channels**: Which marketing channels do you want to use? (e.g., email, social, google-ads, facebook-ads)\n\nOnce you provide these details, I'll create the campaign for you!"
+                }
+            ]
+        }
+    
+    elif name == "create_campaign":
+        # Check for required fields with more specific validation
+        campaign_name = arguments.get("campaign_name")
+        description = arguments.get("description") 
+        client_name = arguments.get("client_name")
+        
+        # Be very specific about what's missing
+        if not campaign_name:
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "❌ Campaign name is required. Please ask the user: What would you like to name this campaign?"
+                    }
+                ],
+                "isError": True
+            }
+            
+        if not description:
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "❌ Campaign description is required. Please ask the user: Can you describe what this campaign is about?"
+                    }
+                ],
+                "isError": True
+            }
+            
+        if not client_name:
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "❌ Client name is required. Please ask the user: Which client is this campaign for?"
+                    }
+                ],
+                "isError": True
+            }
+        
+        # Extract campaign data
+        campaign_name = arguments.get("campaign_name")
+        description = arguments.get("description")
+        client_name = arguments.get("client_name")
+        budget = arguments.get("budget")
+        channels = arguments.get("channels", [])
+        
+        # Create campaign response
+        response_text = f"""Campaign Created Successfully! 🎉
+
+Campaign Details:
+• Name: {campaign_name}
+• Client: {client_name}
+• Description: {description}"""
+        
+        if budget:
+            response_text += f"\n• Budget: ${budget:,.2f}"
+        
+        if channels:
+            response_text += f"\n• Channels: {', '.join(channels)}"
+        
+        response_text += "\n\n✅ Campaign is ready for launch!"
+        
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": response_text
+                }
+            ]
+        }
+    
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": f"Unknown tool: {name}"
+            }
+        ],
+        "isError": True
+    }
+
+def main():
+    for line in sys.stdin:
+        try:
+            request = json.loads(line.strip())
+            request_id = request.get("id", 1)
+            
+            if request.get("method") == "initialize":
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {
+                            "tools": {"listChanged": True}
+                        },
+                        "serverInfo": {
+                            "name": "rave",
+                            "version": "1.0.0"
+                        }
+                    }
+                }
+            elif request.get("method") == "tools/list":
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": handle_list_tools()
+                }
+            elif request.get("method") == "tools/call":
+                params = request.get("params", {})
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": handle_call_tool(
+                        params.get("name"),
+                        params.get("arguments", {})
+                    )
+                }
+            elif request.get("method") == "notifications/initialized":
+                # Handle initialized notification (no response needed for notifications)
+                continue
+            elif request.get("method") == "prompts/list":
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {"prompts": []}
+                }
+            elif request.get("method") == "resources/list":
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {"resources": []}
+                }
+            else:
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {
+                        "code": -32601,
+                        "message": "Method not found"
+                    }
+                }
+            
+            print(json.dumps(response))
+            sys.stdout.flush()
+            
+        except json.JSONDecodeError:
+            print(json.dumps({
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {
+                    "code": -32700,
+                    "message": "Parse error"
+                }
+            }))
+            sys.stdout.flush()
+        except Exception as e:
+            print(json.dumps({
+                "jsonrpc": "2.0", 
+                "id": request.get("id") if 'request' in locals() else None,
+                "error": {
+                    "code": -32603,
+                    "message": f"Internal error: {str(e)}"
+                }
+            }))
+            sys.stdout.flush()
+
+if __name__ == "__main__":
+    main()
