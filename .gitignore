@@ -163,3 +163,7 @@ cython_debug/
 lambda/package/
 **/package/
 *.zip
+
+# Credentials and secrets
+lambda/google-ads-credentials.json
+**/credentials*.json
