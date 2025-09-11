@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import sys
+import requests
 
 def handle_list_tools():
     return {
@@ -56,6 +57,42 @@ def handle_list_tools():
                         }
                     },
                     "required": ["campaign_name", "description", "client_name"]
+                }
+            },
+            {
+                "name": "create_list",
+                "description": "Create a physician distribution map showing the specified number of physicians in a geographic area",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "count": {
+                            "type": "integer",
+                            "description": "Number of physicians to display (e.g., 1000)",
+                            "minimum": 10,
+                            "maximum": 10000
+                        },
+                        "radius": {
+                            "type": "integer",
+                            "description": "Radius in miles (optional, defaults to 50)",
+                            "minimum": 5,
+                            "maximum": 200
+                        },
+                        "lat": {
+                            "type": "number",
+                            "description": "Center latitude (optional, defaults to San Antonio)"
+                        },
+                        "lon": {
+                            "type": "number", 
+                            "description": "Center longitude (optional, defaults to San Antonio)"
+                        },
+                        "clusters": {
+                            "type": "integer",
+                            "description": "Maximum number of clusters (optional, defaults to 50)",
+                            "minimum": 1,
+                            "maximum": 100
+                        }
+                    },
+                    "required": ["count"]
                 }
             }
         ]
@@ -156,6 +193,102 @@ Campaign Details:
                 }
             ]
         }
+    
+    elif name == "create_list":
+        try:
+            count = arguments.get("count")
+            if not count:
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "❌ Please specify the number of physicians to display. Example: 'create list with 1000 candidates'"
+                        }
+                    ],
+                    "isError": True
+                }
+            
+            # Prepare API parameters
+            params = {
+                "points": count,
+                "radius": arguments.get("radius", 50),
+                "clusters": arguments.get("clusters", 50)
+            }
+            
+            # Add lat/lon if provided
+            if arguments.get("lat") is not None:
+                params["lat"] = arguments.get("lat")
+            if arguments.get("lon") is not None:
+                params["lon"] = arguments.get("lon")
+            
+            # Call the Lambda API
+            api_url = "https://dcujcwokb9.execute-api.us-east-1.amazonaws.com/prod/generate-map"
+            
+            print(f"Making API call to {api_url} with params: {params}", file=sys.stderr)
+            
+            response = requests.get(api_url, params=params, timeout=30)
+            response.raise_for_status()
+            
+            result = response.json()
+            
+            if result.get("success"):
+                map_url = result.get("url")
+                parameters = result.get("parameters", {})
+                
+                response_text = f"""📍 **Physician Distribution Map Created!**
+
+🔗 **MAP LINK: {map_url}**
+
+**{parameters.get('points', count):,} Physicians** in a **{parameters.get('radius_miles', 50)} mile radius**
+
+📊 **Map Details:**
+• Generated {parameters.get('clusters_generated', 0)} clusters  
+• Center: {parameters.get('center_lat', 'San Antonio')}, {parameters.get('center_lon', '')}
+• Interactive map with physician concentration visualization
+
+🚨 **IMPORTANT: Click this link to view your map:** {map_url}
+
+The map shows physician distribution with clustering and is ready for analysis."""
+                
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": response_text
+                        }
+                    ]
+                }
+            else:
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": f"❌ Error creating map: {result.get('error', 'Unknown error')}"
+                        }
+                    ],
+                    "isError": True
+                }
+                
+        except requests.exceptions.RequestException as e:
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"❌ Network error calling map API: {str(e)}"
+                    }
+                ],
+                "isError": True
+            }
+        except Exception as e:
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"❌ Error creating physician map: {str(e)}"
+                    }
+                ],
+                "isError": True
+            }
     
     return {
         "content": [
