@@ -8,7 +8,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -52,6 +56,15 @@ type ToolResult struct {
 }
 
 func main() {
+	// Check if we're being called by MCP (stdin has data) or double-clicked (interactive)
+	stat, _ := os.Stdin.Stat()
+	if (stat.Mode() & os.ModeCharDevice) != 0 {
+		// Interactive mode - user double-clicked
+		runDiagnostics()
+		return
+	}
+	
+	// MCP mode - handle JSON-RPC over stdin
 	scanner := bufio.NewScanner(os.Stdin)
 	
 	for scanner.Scan() {
@@ -304,6 +317,18 @@ func handleCreateCampaign(arguments map[string]interface{}) ToolResult {
 }
 
 func handleCreateList(arguments map[string]interface{}) ToolResult {
+	// Check API key first
+	apiKey := os.Getenv("RAVE_API_KEY")
+	if apiKey != "1234" {
+		return ToolResult{
+			Content: []TextContent{{
+				Type: "text",
+				Text: "❌ Invalid API key. Please contact your administrator to get a valid API key for Rave services.",
+			}},
+			IsError: true,
+		}
+	}
+	
 	count := getInt(arguments, "count")
 	if count == 0 {
 		return ToolResult{
@@ -320,6 +345,11 @@ func handleCreateList(arguments map[string]interface{}) ToolResult {
 	params.Set("points", strconv.Itoa(count))
 	params.Set("radius", strconv.Itoa(getIntWithDefault(arguments, "radius", 50)))
 	params.Set("clusters", strconv.Itoa(getIntWithDefault(arguments, "clusters", 50)))
+	
+	// Add API key if provided
+	if apiKey := os.Getenv("RAVE_API_KEY"); apiKey != "" {
+		params.Set("api_key", apiKey)
+	}
 	
 	if lat, ok := arguments["lat"].(float64); ok {
 		params.Set("lat", fmt.Sprintf("%f", lat))
@@ -469,4 +499,226 @@ func sendError(id, code int, message string) {
 	data, _ := json.Marshal(response)
 	fmt.Println(string(data))
 	os.Stdout.Sync()
+}
+
+func runDiagnostics() {
+	var messages []string
+	var hasErrors bool
+	
+	messages = append(messages, "🔧 Rave MCP Server - Configuration Diagnostics")
+	messages = append(messages, "")
+	
+	// Check Claude Desktop config path
+	configPath := getClaudeConfigPath()
+	messages = append(messages, fmt.Sprintf("📁 Config Path: %s", configPath))
+	
+	// Check if config file exists
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		messages = append(messages, "❌ Claude Desktop config file not found!")
+		messages = append(messages, fmt.Sprintf("   Please create: %s", configPath))
+		messages = append(messages, "")
+		messages = append(messages, "📝 Sample Configuration needed:")
+		currentBinary, _ := os.Executable()
+		messages = append(messages, `{
+  "mcpServers": {
+    "rave": {
+      "command": "`+currentBinary+`",
+      "args": [],
+      "env": {
+        "RAVE_API_KEY": "1234"
+      }
+    }
+  }
+}`)
+		hasErrors = true
+		showPopup("Rave MCP Diagnostics", strings.Join(messages, "\n"), hasErrors)
+		return
+	}
+	
+	messages = append(messages, "✅ Config file exists")
+	
+	// Read and validate JSON
+	configData, err := os.ReadFile(configPath)
+	if err != nil {
+		messages = append(messages, fmt.Sprintf("❌ Error reading config file: %s", err))
+		hasErrors = true
+		showPopup("Rave MCP Diagnostics", strings.Join(messages, "\n"), hasErrors)
+		return
+	}
+	
+	var config map[string]interface{}
+	if err := json.Unmarshal(configData, &config); err != nil {
+		messages = append(messages, "❌ Invalid JSON in config file!")
+		messages = append(messages, fmt.Sprintf("   JSON Error: %s", err))
+		hasErrors = true
+		showPopup("Rave MCP Diagnostics", strings.Join(messages, "\n"), hasErrors)
+		return
+	}
+	
+	messages = append(messages, "✅ Config file has valid JSON")
+	
+	// Check for mcpServers section
+	mcpServers, ok := config["mcpServers"].(map[string]interface{})
+	if !ok {
+		messages = append(messages, "❌ No 'mcpServers' section found in config")
+		hasErrors = true
+		showPopup("Rave MCP Diagnostics", strings.Join(messages, "\n"), hasErrors)
+		return
+	}
+	
+	messages = append(messages, "✅ mcpServers section found")
+	
+	// Check for rave server
+	raveServer, ok := mcpServers["rave"].(map[string]interface{})
+	if !ok {
+		messages = append(messages, "❌ No 'rave' server configured in mcpServers")
+		hasErrors = true
+		showPopup("Rave MCP Diagnostics", strings.Join(messages, "\n"), hasErrors)
+		return
+	}
+	
+	messages = append(messages, "✅ Rave server configured")
+	
+	// Check command path
+	command, ok := raveServer["command"].(string)
+	if !ok {
+		messages = append(messages, "❌ No 'command' specified for rave server")
+		hasErrors = true
+		showPopup("Rave MCP Diagnostics", strings.Join(messages, "\n"), hasErrors)
+		return
+	}
+	
+	messages = append(messages, fmt.Sprintf("📍 Command path: %s", command))
+	
+	// Check if binary exists
+	if _, err := os.Stat(command); os.IsNotExist(err) {
+		messages = append(messages, "❌ Rave MCP binary not found!")
+		messages = append(messages, fmt.Sprintf("   Expected at: %s", command))
+		hasErrors = true
+		showPopup("Rave MCP Diagnostics", strings.Join(messages, "\n"), hasErrors)
+		return
+	}
+	
+	messages = append(messages, "✅ Rave MCP binary exists")
+	
+	// Check API key
+	if env, ok := raveServer["env"].(map[string]interface{}); ok {
+		if apiKey, ok := env["RAVE_API_KEY"].(string); ok {
+			if apiKey == "1234" {
+				messages = append(messages, "✅ API key configured correctly")
+			} else if apiKey == "your-api-key-here" {
+				messages = append(messages, "⚠️  API key is placeholder - update to '1234' for testing")
+				hasErrors = true
+			} else {
+				messages = append(messages, fmt.Sprintf("⚠️  API key is set to: %s (expected: 1234 for testing)", apiKey))
+				hasErrors = true
+			}
+		} else {
+			messages = append(messages, "❌ No RAVE_API_KEY found in environment variables")
+			messages = append(messages, "")
+			messages = append(messages, "📝 Add this to your rave server config:")
+			messages = append(messages, `"env": {
+  "RAVE_API_KEY": "1234"
+}`)
+			hasErrors = true
+		}
+	} else {
+		messages = append(messages, "❌ No environment variables configured")
+		messages = append(messages, "")
+		messages = append(messages, "📝 Add this to your rave server config:")
+		messages = append(messages, `"env": {
+  "RAVE_API_KEY": "1234"
+}`)
+		hasErrors = true
+	}
+	
+	messages = append(messages, "")
+	if hasErrors {
+		messages = append(messages, "⚠️  Please fix the issues above and restart Claude Desktop")
+	} else {
+		messages = append(messages, "🎉 Configuration validation complete!")
+		messages = append(messages, "   Restart Claude Desktop if you made any changes.")
+	}
+	
+	showPopup("Rave MCP Diagnostics", strings.Join(messages, "\n"), hasErrors)
+}
+
+func getClaudeConfigPath() string {
+	switch runtime.GOOS {
+	case "darwin": // macOS
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json")
+	case "windows":
+		appData := os.Getenv("APPDATA")
+		return filepath.Join(appData, "Claude", "claude_desktop_config.json")
+	default:
+		// Linux fallback
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, ".config", "Claude", "claude_desktop_config.json")
+	}
+}
+
+func showSampleConfig() {
+	currentBinary, _ := os.Executable()
+	
+	fmt.Println("📝 Sample Configuration:")
+	fmt.Printf(`{
+  "mcpServers": {
+    "rave": {
+      "command": "%s",
+      "args": [],
+      "env": {
+        "RAVE_API_KEY": "1234"
+      }
+    }
+  }
+}`, currentBinary)
+	fmt.Println()
+}
+
+func showApiKeyConfig() {
+	fmt.Println()
+	fmt.Println("📝 Add this to your rave server config:")
+	fmt.Println(`"env": {
+  "RAVE_API_KEY": "1234"
+}`)
+}
+
+func showPopup(title, message string, isError bool) {
+	switch runtime.GOOS {
+	case "darwin": // macOS
+		// Use osascript to show dialog
+		iconType := "note"
+		if isError {
+			iconType = "caution"
+		}
+		
+		cmd := exec.Command("osascript", "-e", fmt.Sprintf(`display dialog "%s" with title "%s" with icon %s buttons {"OK"} default button "OK"`, 
+			strings.ReplaceAll(message, `"`, `\"`), 
+			title, 
+			iconType))
+		cmd.Run()
+		
+	case "windows":
+		// Use PowerShell to show message box
+		iconType := "Information"
+		if isError {
+			iconType = "Warning"
+		}
+		
+		psScript := fmt.Sprintf(`Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show('%s', '%s', 'OK', '%s')`, 
+			strings.ReplaceAll(message, `'`, `''`), 
+			title, 
+			iconType)
+		
+		cmd := exec.Command("powershell", "-Command", psScript)
+		cmd.Run()
+		
+	default:
+		// Fallback to console output for Linux
+		fmt.Printf("=== %s ===\n", title)
+		fmt.Println(message)
+		fmt.Println("\nPress Enter to continue...")
+		bufio.NewReader(os.Stdin).ReadLine()
+	}
 }
