@@ -95,37 +95,113 @@ def create_clusters(points: List[Tuple[float, float]], max_clusters: int = 50, c
     
     return clusters
 
-def get_base_map_url(width: int = 1024, height: int = 1024) -> str:
-    """Get base map URL without any overlays."""
+def calculate_bounding_box(coordinates: List[Tuple[float, float]], padding_factor: float = 0.3) -> Dict:
+    """Calculate bounding box of coordinates with padding."""
+    if not coordinates:
+        return None
+    
+    lats = [coord[0] for coord in coordinates]
+    lons = [coord[1] for coord in coordinates]
+    
+    min_lat, max_lat = min(lats), max(lats)
+    min_lon, max_lon = min(lons), max(lons)
+    
+    # Add padding (30% larger)
+    lat_range = max_lat - min_lat
+    lon_range = max_lon - min_lon
+    
+    lat_padding = lat_range * padding_factor / 2
+    lon_padding = lon_range * padding_factor / 2
+    
+    return {
+        "min_lat": min_lat - lat_padding,
+        "max_lat": max_lat + lat_padding,
+        "min_lon": min_lon - lon_padding,
+        "max_lon": max_lon + lon_padding,
+        "center_lat": (min_lat + max_lat) / 2,
+        "center_lon": (min_lon + max_lon) / 2
+    }
+
+def calculate_zoom_level(bounds: Dict, image_width: int = 1024, image_height: int = 1024) -> int:
+    """Calculate appropriate zoom level for the bounding box."""
+    lat_range = bounds["max_lat"] - bounds["min_lat"]
+    lon_range = bounds["max_lon"] - bounds["min_lon"]
+    
+    # Mapbox zoom levels (approximate degrees per pixel at different zooms)
+    # Higher zoom = more detailed view
+    zoom_levels = {
+        0: 360,    # World view
+        1: 180,
+        2: 90,
+        3: 45,
+        4: 22.5,
+        5: 11.25,
+        6: 5.625,
+        7: 2.8125,
+        8: 1.40625,
+        9: 0.703125,
+        10: 0.3515625,
+        11: 0.17578125,
+        12: 0.087890625,
+        13: 0.0439453125,
+        14: 0.02197265625,
+        15: 0.010986328125
+    }
+    
+    # Find zoom level that fits our bounds
+    max_range = max(lat_range, lon_range)
+    
+    for zoom in range(15, 0, -1):
+        if max_range < zoom_levels[zoom] * 0.8:  # 80% of zoom level range
+            return zoom
+    
+    return 8  # Default fallback
+
+def get_base_map_url(coordinates: List[Tuple[float, float]], width: int = 1024, height: int = 1024) -> str:
+    """Get base map URL centered on coordinate bounding box."""
     base_url = "https://api.mapbox.com/styles/v1/mapbox/streets-v11/static"
     
-    # Center on Texas
-    texas_center_lon = -99.9018
-    texas_center_lat = 31.9686
+    # Calculate bounding box with 30% padding
+    bounds = calculate_bounding_box(coordinates, 0.3)
+    if not bounds:
+        # Fallback to Texas center if no coordinates
+        center_lon, center_lat, zoom = -99.9018, 31.9686, 6
+    else:
+        center_lon = bounds["center_lon"]
+        center_lat = bounds["center_lat"]
+        zoom = calculate_zoom_level(bounds, width, height)
     
-    url = f"{base_url}/{texas_center_lon},{texas_center_lat},6/{width}x{height}@2x"
+    url = f"{base_url}/{center_lon},{center_lat},{zoom}/{width}x{height}@2x"
     url += f"?access_token={MAPBOX_ACCESS_TOKEN}"
     
     return url
 
-def lat_lon_to_pixel(lat: float, lon: float, image_width: int, image_height: int) -> Tuple[int, int]:
-    """Convert latitude/longitude to pixel coordinates on the Texas map."""
-    # Normalize coordinates to 0-1 range based on Texas bounds
-    lon_norm = (lon - TEXAS_BOUNDS["min_lon"]) / (TEXAS_BOUNDS["max_lon"] - TEXAS_BOUNDS["min_lon"])
-    lat_norm = (TEXAS_BOUNDS["max_lat"] - lat) / (TEXAS_BOUNDS["max_lat"] - TEXAS_BOUNDS["min_lat"])
+def lat_lon_to_pixel(lat: float, lon: float, image_width: int, image_height: int, bounds: Dict) -> Tuple[int, int]:
+    """Convert latitude/longitude to pixel coordinates based on map bounds."""
+    # Normalize coordinates to 0-1 range based on actual map bounds
+    lon_norm = (lon - bounds["min_lon"]) / (bounds["max_lon"] - bounds["min_lon"])
+    lat_norm = (bounds["max_lat"] - lat) / (bounds["max_lat"] - bounds["min_lat"])
     
-    # Convert to pixel coordinates with some padding
-    padding = 0.1  # 10% padding
-    x = int((lon_norm * (1 - 2 * padding) + padding) * image_width)
-    y = int((lat_norm * (1 - 2 * padding) + padding) * image_height)
+    # Convert to pixel coordinates
+    x = int(lon_norm * image_width)
+    y = int(lat_norm * image_height)
+    
+    # Clamp to image bounds
+    x = max(0, min(image_width - 1, x))
+    y = max(0, min(image_height - 1, y))
     
     return x, y
 
-def draw_clusters_on_image(image_path: str, clusters: List[Cluster], output_path: str):
+def draw_clusters_on_image(image_path: str, clusters: List[Cluster], coordinates: List[Tuple[float, float]], output_path: str):
     """Draw clusters on the map image with varying dot sizes."""
     # Open the base map image
     img = Image.open(image_path)
     draw = ImageDraw.Draw(img)
+    
+    # Calculate bounds for coordinate conversion
+    bounds = calculate_bounding_box(coordinates, 0.3)
+    if not bounds:
+        return
     
     # Define colors for different cluster sizes
     colors = {
@@ -138,7 +214,7 @@ def draw_clusters_on_image(image_path: str, clusters: List[Cluster], output_path
     sorted_clusters = sorted(clusters, key=lambda c: c.point_count, reverse=True)
     
     for cluster in sorted_clusters:
-        x, y = lat_lon_to_pixel(cluster.center_lat, cluster.center_lon, img.width, img.height)
+        x, y = lat_lon_to_pixel(cluster.center_lat, cluster.center_lon, img.width, img.height, bounds)
         
         # Determine dot size and color based on cluster size with more dramatic differences
         if cluster.point_count == 1:
@@ -190,7 +266,7 @@ def main():
     print(f"Created {len(clusters)} clusters from 2000 points")
     
     print("Downloading base map image...")
-    base_map_url = get_base_map_url()
+    base_map_url = get_base_map_url(coordinates)
     response = requests.get(base_map_url)
     response.raise_for_status()
     
@@ -201,7 +277,7 @@ def main():
     
     print("Drawing clusters on map...")
     output_path = "maps/texas_clustered_map.png"
-    draw_clusters_on_image(base_map_path, clusters, output_path)
+    draw_clusters_on_image(base_map_path, clusters, coordinates, output_path)
     
     print("Clustered map generation complete!")
     print(f"Total points: 2000")
