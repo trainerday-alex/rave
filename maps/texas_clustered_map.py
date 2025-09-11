@@ -95,7 +95,7 @@ def create_clusters(points: List[Tuple[float, float]], max_clusters: int = 50, c
     
     return clusters
 
-def get_base_map_url(width: int = 1024, height: int = 1024) -> str:
+def get_base_map_url(width: int = 1280, height: int = 1280) -> str:
     """Get base map URL without any overlays."""
     base_url = "https://api.mapbox.com/styles/v1/mapbox/streets-v11/static"
     
@@ -140,7 +140,7 @@ def draw_clusters_on_image(image_path: str, clusters: List[Cluster], output_path
     for cluster in sorted_clusters:
         x, y = lat_lon_to_pixel(cluster.center_lat, cluster.center_lon, img.width, img.height)
         
-        # Determine dot size and color based on cluster size with more dramatic differences
+        # Determine dot size and color based on cluster size - keep original sizes
         if cluster.point_count == 1:
             radius = 4
             color = colors['small']
@@ -157,24 +157,40 @@ def draw_clusters_on_image(image_path: str, clusters: List[Cluster], output_path
             radius = 32
             color = (150, 0, 0)  # Even darker red for very large clusters
         
-        # Draw circle with border
-        draw.ellipse([x-radius, y-radius, x+radius, y+radius], fill=color, outline=(0, 0, 0), width=2)
+        # Draw circle without border
+        draw.ellipse([x-radius, y-radius, x+radius, y+radius], fill=color)
         
         # Add text for clusters with more than 1 point
         if cluster.point_count > 1:
             text = str(cluster.point_count)
-            # Get text size (approximate)
-            text_width = len(text) * 7
-            text_height = 12
-            text_x = x - text_width // 2
-            text_y = y - text_height // 2
             
-            # Draw text with outline for better visibility
-            for dx in [-1, 0, 1]:
-                for dy in [-1, 0, 1]:
-                    if dx != 0 or dy != 0:
-                        draw.text((text_x + dx, text_y + dy), text, fill=(0, 0, 0))
-            draw.text((text_x, text_y), text, fill=(255, 255, 255))
+            # Adjust font size based on dot size - smaller dots get smaller font
+            if radius <= 8:  # Small dots
+                font_size = 14  # 30% smaller than 20
+            else:  # Medium and large dots
+                font_size = 20
+            
+            # Try to load a font, fall back to default if not available
+            try:
+                from PIL import ImageFont
+                font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", font_size)
+            except:
+                font = None
+            
+            # Draw text centered using anchor parameter
+            if font:
+                draw.text((x, y), text, fill=(255, 255, 255), font=font, anchor="mm")
+            else:
+                # Fallback for default font - manual centering
+                if radius <= 8:
+                    text_width = len(text) * 8
+                    text_height = 12
+                else:
+                    text_width = len(text) * 12
+                    text_height = 16
+                text_x = x - text_width // 2
+                text_y = y - text_height // 2
+                draw.text((text_x, text_y), text, fill=(255, 255, 255))
     
     # Save the final image
     img.save(output_path)
@@ -200,7 +216,7 @@ def main():
     print(f"Base map saved as {base_map_path}")
     
     print("Drawing clusters on map...")
-    output_path = "maps/texas_clustered_map.png"
+    output_path = "maps/texas_clustered_map_hires.png"
     draw_clusters_on_image(base_map_path, clusters, output_path)
     
     print("Clustered map generation complete!")
